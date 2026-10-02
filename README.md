@@ -1,8 +1,8 @@
 # opencode-plugin-codex-usage
 
-OpenCode TUI plugin that shows live Codex usage limits in the right sidebar.
+OpenCode TUI plugin that displays Codex-reported usage limits in the right sidebar.
 
-It reads Codex quota data from `codex app-server` using the same `account/rateLimits/read` RPC that Codex uses for rich clients, then renders the returned buckets inside OpenCode's `sidebar_content` slot.
+It reads rate-limit data from `codex app-server` using Codex's `account/rateLimits/read` RPC and displays the returned usage windows. These numbers are reported by Codex; they are not a complete view of ChatGPT Plus billing, plan entitlements, or account usage.
 
 <p>
   <img src="docs/dark.png" alt="Example output (dark)" width="420" />
@@ -11,147 +11,88 @@ It reads Codex quota data from `codex app-server` using the same `account/rateLi
 
 ## What it shows
 
-- The main Codex usage bucket.
-- Extra model-specific buckets when Codex exposes them, for example `GPT-5.3-Codex-Spark`.
-- The current remaining percentage and reset time for each available window.
+- The main Codex usage window.
+- Additional model-specific windows when Codex exposes them, for example `GPT-5.3-Codex-Spark`.
+- The remaining percentage and reset time reported for each available window.
 
 ## Requirements
 
-- OpenCode TUI.
+- OpenCode v2.0.20 with its TUI.
 - The `codex` CLI installed and available on your `PATH`, unless you set `codexBinary` to a custom path.
-- A working Codex login so `codex app-server` can read your rate limits.
+- A working Codex login so `codex app-server` can read its rate limits.
 
-## When it appears
+## Installation and configuration
 
-- The plugin adds a `Codex Usage` section to the right sidebar.
-- It is most useful during Codex or OpenAI-backed sessions, where it starts expanded automatically.
-- In other sessions it stays available in the sidebar, but starts collapsed.
-
-## Installation
-
-Install it like any other OpenCode plugin:
-
-```bash
-opencode plugin opencode-plugin-codex-usage
-```
-
-If you want to configure it in your workspace-local TUI config, add this to `.opencode/tui.json`:
+Install the published package by adding it to OpenCode's **global** `cli.json` in the global OpenCode configuration directory. The schema URL and plugin entry format for OpenCode v2.0.20 are:
 
 ```json
 {
-  "$schema": "https://opencode.ai/tui.json",
-  "plugin": [["opencode-plugin-codex-usage", { "refreshMs": 30000 }]]
+  "$schema": "https://opencode.ai/v2/cli.json",
+  "plugins": [
+    {
+      "package": "opencode-plugin-codex-usage",
+      "options": {
+        "refreshMs": 30000
+      }
+    }
+  ]
 }
 ```
 
-Restart OpenCode after updating the config.
-
-Open a Codex-backed session and look for `Codex Usage` in the right sidebar.
-
-## Manual Installation
-
-Use this only if you want to run a local checkout of the plugin, for example while testing unreleased changes.
-
-Clone the repository and install dependencies:
-
-```bash
-git clone https://github.com/anaskhan96/opencode-plugin-codex-usage.git
-cd opencode-plugin-codex-usage
-bun install
-```
-
-Then point `.opencode/tui.json` at the local source:
+For a local checkout, install its dependencies with `bun install`, then use the absolute directory path as a `file:///...` package value:
 
 ```json
 {
-  "$schema": "https://opencode.ai/tui.json",
-  "plugin": [["file:///absolute/path/to/opencode-plugin-codex-usage", { "refreshMs": 30000 }]]
+  "$schema": "https://opencode.ai/v2/cli.json",
+  "plugins": [
+    {
+      "package": "file:///absolute/path/to/opencode-plugin-codex-usage",
+      "options": {
+        "refreshMs": 30000
+      }
+    }
+  ]
 }
 ```
 
-Restart OpenCode after updating the config.
+Use the absolute path to the plugin directory, not a path to an individual source file. Restart OpenCode after changing the global configuration. This setup documents the global `cli.json`; it does not claim that a project-level `cli.json` is loaded.
 
-## Configuration
+The plugin adds a `Codex Usage` section to the right sidebar. It starts expanded in Codex or OpenAI-backed sessions and remains available but collapsed in other sessions.
 
-The plugin accepts these options in `tui.json`.
+## Options
 
-If you installed the published plugin, configure it like this:
+Pass options in the entry's `options` object in `cli.json`:
 
-```json
-{
-  "plugin": [["opencode-plugin-codex-usage", {
-    "refreshMs": 30000,
-    "codexBinary": "codex",
-    "codexHome": "/path/to/codex-home"
-  }]]
-}
-```
+- `refreshMs`: Poll interval in milliseconds. Default: `30000`; minimum enforced value: `15000`; maximum: `2147483647`.
+- `codexBinary`: Command or absolute path used to launch Codex. Default: `codex`.
+- `codexHome`: Directory used as `CODEX_HOME` when launching Codex. Default: unset.
 
-If you are using a local checkout, use the same options with your `file:///absolute/path/...` plugin entry:
+If `codex` is not on your `PATH`, set `codexBinary` to the full path of the executable. A non-empty `codexHome` overrides any `CODEX_HOME` inherited from the OpenCode process. If omitted or empty, the inherited environment is left unchanged, allowing Codex to use an existing `CODEX_HOME` or its normal `~/.codex` fallback.
 
-```json
-{
-  "plugin": [["file:///absolute/path/to/opencode-plugin-codex-usage", {
-    "refreshMs": 30000,
-    "codexBinary": "codex",
-    "codexHome": "/path/to/codex-home"
-  }]]
-}
-```
-
-Options:
-
-- `refreshMs`
-  Poll interval in milliseconds.
-  Default: `30000`
-  Minimum enforced value: `15000`
-
-- `codexBinary`
-  Command or absolute path used to launch Codex.
-  Default: `codex`
-
-- `codexHome`
-  Directory used as `CODEX_HOME` when launching Codex.
-  Default: unset
-
-If `codex` is not on your `PATH`, set `codexBinary` to the full path of the executable.
-
-If `codexHome` is set to a non-empty value, it overrides any `CODEX_HOME` inherited from the
-OpenCode process. If it is omitted or empty, the inherited environment is left unchanged, allowing
-Codex to use an existing `CODEX_HOME` or its normal `~/.codex` fallback.
+The plugin treats provider IDs containing `openai` or `codex` as a heuristic for expanding the section; this substring match does not prove that the session is authenticated to Codex. When a session has no qualifying assistant/model-switch history yet, the section starts collapsed.
 
 ## Troubleshooting
 
-- `codex CLI not found`
-  Install the Codex CLI, or set `codexBinary` to its absolute path.
+- **`codex CLI not found`**: Install the Codex CLI, or set `codexBinary` to its absolute path.
+- **`No Codex usage data available`**: Make sure Codex is logged in and can return rate-limit data from `codex app-server`.
+- **`Codex usage request failed`**: Check that Codex is logged in under the same `codexHome` (or inherited `CODEX_HOME`) used by the plugin; run `codex login` there if needed. The app-server diagnostic is intentionally hidden because it may contain authentication or account data.
+- **The plugin appears but stays collapsed**: This is expected in non-Codex sessions. Open a Codex or OpenAI-backed session to see it expand automatically.
+- **The sidebar does not update immediately**: The default refresh interval is `30000ms`. The plugin also refreshes when the session becomes idle.
 
-- `No Codex usage data available`
-  Make sure Codex is logged in and able to return rate-limit data from `codex app-server`.
+## Local verification
 
-- `Codex login expired`
-  Run `codex login`, then restart OpenCode. This means the Codex CLI's cached ChatGPT authentication token was invalidated or expired.
-
-- The plugin appears, but stays collapsed
-  That is expected in non-Codex sessions. Open a Codex or OpenAI-backed session to see it expand automatically.
-
-- The sidebar does not update immediately
-  The default refresh interval is `30000ms`. The plugin also refreshes when the session becomes idle.
-
-## Local Verification
-
-For a local checkout, run the import smoke test:
+From a local checkout, run the import smoke check and tests:
 
 ```bash
-cd opencode-plugin-codex-usage
 bun run check
+bun test
 ```
 
-That verifies the plugin module can be imported with OpenTUI runtime support.
+The check verifies that the plugin module can be imported with OpenTUI runtime support.
 
-## Performance Notes
+## Performance notes
 
-- CPU: low. The plugin is idle most of the time and does a short refresh on an interval and when a session becomes idle.
-- Memory: low. It keeps only a small in-memory snapshot of the latest limit data.
-- Token/context usage: none. It does not call the model or inject extra prompt/context into OpenCode sessions.
-
-The only real overhead is that each refresh launches a short-lived `codex app-server` process to read the current rate limits. At the default `30000ms` this should be light, but if you want even less churn you can increase `refreshMs` to `60000` or `120000`.
+- CPU and memory usage are low; only a small in-memory snapshot is retained.
+- The plugin does not call the model or inject prompt/context into OpenCode sessions.
+- Each refresh launches a short-lived `codex app-server` process to read current usage windows. Increase `refreshMs` to `60000` or `120000` to reduce refresh frequency.
+- Cancellation and timeout terminate the direct Codex executable and wait for its close event before another refresh can start. A module-level guard also prevents overlapping subprocesses across mounted Views. This is fail-closed: there is no timeout fallback that releases ownership before `close`, so refresh may remain stalled indefinitely if termination fails or descendants retain inherited pipes. Only the direct child is terminated; process-tree cleanup is not managed, and Codex is expected to clean up any descendants it creates.

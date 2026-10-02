@@ -26,24 +26,33 @@
   "type": "module",
   "exports": {
     ".": {
-      "import": "./tui.tsx"
+      "import": "./tui.ts"
     },
     "./tui": {
-      "import": "./tui.tsx"
+      "import": "./tui.ts"
     }
   },
   "files": [
     "docs",
     "README.md",
     "package.json",
-    "tui.tsx"
+    "tui.ts",
+    "tui.tsx",
+    "codex-usage.ts"
   ],
   "scripts": {
-    "check": "bun -e \"import('@opentui/solid/runtime-plugin-support').then(() => import('./tui.tsx')).then(() => console.log('plugin import ok'))\""
+    "check": "bun -e \"import('@opentui/solid/runtime-plugin-support').then(() => import('./tui.ts')).then(() => console.log('plugin import ok'))\"",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "latest",
-    "@opentui/solid": "^0.1.101",
-    "solid-js": "^1.9.10"
+    "@opencode/plugin": "2.0.20",
+    "@opentui/core": "^0.5.12",
+    "@opentui/solid": "^0.5.12",
+    "solid-js": "1.9.12"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0",
+    "typescript": "^5.8.2"
   }
 }

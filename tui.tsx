@@ -86,7 +86,7 @@ function SnapshotView(props: {
       <Show when={credits()}>
         {(balance) => (
           <box flexDirection="row" gap={0}>
-            <text fg={props.theme().textMuted}>Credits available: </text>
+            <text fg={props.theme().textMuted}>Usage credit balance: </text>
             <text fg={props.theme().text}>{balance()}</text>
           </box>
         )}
@@ -162,6 +162,7 @@ function View(props: { context: Plugin.Context; options: PluginOptions; sessionI
   })
 
   const snapshots = () => state().data?.snapshots || []
+  const resetCredits = () => state().data?.rateLimitResetCredits?.availableCount
   const errorText = () => {
     const current = state()
     return current.status === "error" ? current.message : " "
@@ -184,6 +185,12 @@ function View(props: { context: Plugin.Context; options: PluginOptions; sessionI
         </text>
       </box>
       <Show when={!collapsed()}>
+        <Show when={resetCredits() !== undefined}>
+          <box flexDirection="row" gap={0}>
+            <text fg={theme().textMuted}>Reset credits available: </text>
+            <text fg={theme().text}>{resetCredits()}</text>
+          </box>
+        </Show>
         <Switch>
           <Match when={state().status === "error" && !state().data}>
             <text fg={theme().warning}>{errorText()}</text>

@@ -66,13 +66,28 @@ describe("Codex app-server protocol", () => {
       "const rl=require('node:readline').createInterface({input:process.stdin});",
       "rl.on('line', line => { const m=JSON.parse(line);",
       "if(m.method==='initialize') process.stdout.write(JSON.stringify({id:1,result:{}})+'\\n');",
-      "if(m.method==='account/rateLimits/read') process.stdout.write(JSON.stringify({id:2,result:{rateLimits:{limitId:'codex',primary:{usedPercent:25}}}})+'\\n');",
+      "if(m.method==='account/rateLimits/read') process.stdout.write(JSON.stringify({id:2,result:{rateLimits:{limitId:'codex',primary:{usedPercent:25}},rateLimitResetCredits:{availableCount:1}}})+'\\n');",
       "});",
     ].join("")
     const data = await fetchRateLimits(process.execPath, undefined, undefined, (_command, _args, options) =>
       nodeSpawn(process.execPath, ["-e", script], options),
     )
     expect(data.snapshots[0]?.primary?.usedPercent).toBe(25)
+    expect(data.rateLimitResetCredits).toEqual({ availableCount: 1 })
+  })
+
+  test("preserves known zero reset credits and treats absent or null as unknown", async () => {
+    for (const [field, expected] of [
+      [",rateLimitResetCredits:{availableCount:0}", { availableCount: 0 }],
+      [",rateLimitResetCredits:null", undefined],
+      ["", undefined],
+    ] as const) {
+      const script = `const rl=require('node:readline').createInterface({input:process.stdin}); rl.on('line', line => { const m=JSON.parse(line); if(m.id===1) process.stdout.write(JSON.stringify({id:1,result:{}})+'\\n'); if(m.id===2) process.stdout.write(JSON.stringify({id:2,result:{rateLimits:{limitId:'codex'}${field}}})+'\\n'); });`
+      const data = await fetchRateLimits(process.execPath, undefined, undefined, (_command, _args, options) =>
+        nodeSpawn(process.execPath, ["-e", script], options),
+      )
+      expect(data.rateLimitResetCredits).toEqual(expected)
+    }
   })
 
   test("rejects initialize errors without leaking server diagnostics", async () => {
@@ -105,6 +120,14 @@ describe("Codex app-server protocol", () => {
       '{"rateLimits":{"credits":{"hasCredits":"yes"}}}',
       '{"rateLimits":{"credits":{"unlimited":0}}}',
       '{"rateLimits":{"credits":{"balance":42}}}',
+      '{"rateLimitResetCredits":42}',
+      '{"rateLimitResetCredits":[]}',
+      '{"rateLimitResetCredits":{}}',
+      '{"rateLimitResetCredits":{"availableCount":"1"}}',
+      '{"rateLimitResetCredits":{"availableCount":-1}}',
+      '{"rateLimitResetCredits":{"availableCount":1.5}}',
+      '{"rateLimitResetCredits":{"availableCount":1e100}}',
+      '{"rateLimitResetCredits":{"availableCount":1e400}}',
     ]) {
       const script = `const rl=require('node:readline').createInterface({input:process.stdin}); rl.on('line', line => { const m=JSON.parse(line); if(m.id===1) process.stdout.write(JSON.stringify({id:1,result:{}})+'\\n'); if(m.id===2) process.stdout.write(JSON.stringify({id:2,result:JSON.parse(${JSON.stringify(result)})})+'\\n'); });`
       await expect(fetchRateLimits(process.execPath, undefined, undefined, (_command, _args, options) =>
@@ -234,9 +257,10 @@ describe("V2 plugin slot runtime", () => {
     const { testRender } = await import("@opentui/solid")
     let fetchCalls = 0
     let activeSignal: AbortSignal | undefined
-    let nextData: { fetchedAt: number; snapshots: { limitId: string; primary: { usedPercent: number }; credits?: { balance?: string | null; unlimited?: boolean } }[] } | undefined = {
+    let nextData: { fetchedAt: number; snapshots: { limitId: string; primary: { usedPercent: number }; credits?: { balance?: string | null; unlimited?: boolean } }[]; rateLimitResetCredits?: { availableCount: number } } | undefined = {
       fetchedAt: 0,
       snapshots: [{ limitId: "codex", primary: { usedPercent: 19 }, credits: { balance: "$12.50" } }],
+      rateLimitResetCredits: { availableCount: 1 },
     }
     mock.module("./codex-usage", () => ({
       durationLabel: (_window: unknown, fallback: string) => fallback,
@@ -293,26 +317,31 @@ describe("V2 plugin slot runtime", () => {
     try {
       setup = await testRender(() => render!({ sessionID: "session-test" }) as never, { width: 80, height: 24 })
       await setup.renderOnce()
-      const balanceFrame = await setup.waitForFrame((value) => value.includes("Credits available: $12.50"))
+      const balanceFrame = await setup.waitForFrame((value) => value.includes("Usage credit balance: $12.50"))
       expect(balanceFrame).toContain("Codex Usage")
-      expect(balanceFrame).toContain("Credits available: $12.50")
+      expect(balanceFrame).toContain("Usage credit balance: $12.50")
+      expect(balanceFrame).toContain("Reset credits available: 1")
+      expect(balanceFrame.indexOf("Reset credits available: 1")).toBeLessThan(balanceFrame.indexOf("Usage credit balance: $12.50"))
       expect(fetchCalls).toBe(1)
       expect(activeSignal?.aborted).toBe(false)
 
-      nextData = { fetchedAt: 0, snapshots: [{ limitId: "codex", primary: { usedPercent: 38 }, credits: { unlimited: true, balance: "$12.50" } }] }
+      nextData = { fetchedAt: 0, snapshots: [{ limitId: "codex", primary: { usedPercent: 38 }, credits: { unlimited: true, balance: "$12.50" } }], rateLimitResetCredits: { availableCount: 0 } }
       idleListener?.({ data: { sessionID: "session-test" } })
-      const unlimitedFrame = await setup.waitForFrame((value) => value.includes("62%") && value.includes("Credits available: Unlimited"))
+      const unlimitedFrame = await setup.waitForFrame((value) => value.includes("62%") && value.includes("Usage credit balance: Unlimited"))
       expect(unlimitedFrame).not.toContain("$12.50")
+      expect(unlimitedFrame).toContain("Reset credits available: 0")
+      expect(unlimitedFrame.indexOf("Reset credits available: 0")).toBeLessThan(unlimitedFrame.indexOf("Usage credit balance: Unlimited"))
 
       nextData = { fetchedAt: 0, snapshots: [{ limitId: "codex", primary: { usedPercent: 27 }, credits: { balance: "  " } }] }
       idleListener?.({ data: { sessionID: "session-test" } })
       const noBalanceFrame = await setup.waitForFrame((value) => value.includes("73%"))
-      expect(noBalanceFrame).not.toContain("Credits available:")
+      expect(noBalanceFrame).not.toContain("Usage credit balance:")
 
       nextData = { fetchedAt: 0, snapshots: [{ limitId: "codex", primary: { usedPercent: 44 } }] }
       idleListener?.({ data: { sessionID: "session-test" } })
       const noCreditsFrame = await setup.waitForFrame((value) => value.includes("56%"))
-      expect(noCreditsFrame).not.toContain("Credits available:")
+      expect(noCreditsFrame).not.toContain("Usage credit balance:")
+      expect(noCreditsFrame).not.toContain("Reset credits available:")
 
       idleListener?.({ data: { sessionID: "session-test" } })
       expect(fetchCalls).toBe(5)

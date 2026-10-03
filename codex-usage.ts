@@ -27,14 +27,20 @@ export type RateLimitSnapshot = {
   planType?: string | null
 }
 
+export type RateLimitResetCredits = {
+  availableCount: number
+}
+
 export type RateLimitResponse = {
   rateLimits?: RateLimitSnapshot | null
   rateLimitsByLimitId?: Record<string, RateLimitSnapshot> | null
+  rateLimitResetCredits?: RateLimitResetCredits | null
 }
 
 export type RateLimitData = {
   fetchedAt: number
   snapshots: RateLimitSnapshot[]
+  rateLimitResetCredits?: RateLimitResetCredits
 }
 
 export type RateLimitState =
@@ -175,6 +181,23 @@ export function normalizeSnapshots(input: unknown) {
   return primary ? [primary] : []
 }
 
+function validateResetCredits(value: unknown): RateLimitResetCredits | undefined {
+  if (value === undefined || value === null) return undefined
+  if (!isRecord(value)) throw new Error("Codex returned malformed rateLimitResetCredits")
+  const count = value.availableCount
+  if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
+    throw new Error("Codex returned malformed rateLimitResetCredits availableCount")
+  }
+  return { availableCount: count }
+}
+
+function normalizeRateLimitResponse(input: unknown) {
+  if (!isRecord(input)) throw new Error("Codex returned a malformed rate-limit result")
+  const snapshots = normalizeSnapshots(input)
+  const rateLimitResetCredits = validateResetCredits(input.rateLimitResetCredits)
+  return { snapshots, ...(rateLimitResetCredits ? { rateLimitResetCredits } : {}) }
+}
+
 type SpawnProcess = (command: string, args: string[], options: Parameters<typeof nodeSpawn>[2]) => ChildProcess
 
 /** Fetches usage through Codex's delegated app-server auth; credentials are never read by this plugin. */
@@ -279,8 +302,8 @@ export async function fetchRateLimits(
           return
         }
         if (!initialized || !requestSent) return
-        const snapshots = normalizeSnapshots(message.result)
-        finish(undefined, { fetchedAt: Date.now(), snapshots })
+        const normalized = normalizeRateLimitResponse(message.result)
+        finish(undefined, { fetchedAt: Date.now(), ...normalized })
       } catch {
         finish(new Error("Codex returned malformed or invalid usage data"))
       }

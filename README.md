@@ -14,6 +14,8 @@ It reads rate-limit data from `codex app-server` using Codex's `account/rateLimi
 - The main Codex usage window.
 - Additional model-specific windows when Codex exposes them, for example `GPT-5.3-Codex-Spark`.
 - The remaining percentage and reset time reported for each available window.
+- The available reset-credit count when Codex reports it. This count is separate from the per-window usage credit balance; Codex does not expose an expiry for reset credits.
+- The usage credit balance reported on an individual rate-limit window, when available. It is not the reset-credit count.
 
 ## Requirements
 

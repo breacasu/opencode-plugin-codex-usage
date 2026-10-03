@@ -257,9 +257,12 @@ describe("V2 plugin slot runtime", () => {
     const { testRender } = await import("@opentui/solid")
     let fetchCalls = 0
     let activeSignal: AbortSignal | undefined
-    let nextData: { fetchedAt: number; snapshots: { limitId: string; primary: { usedPercent: number }; credits?: { balance?: string | null; unlimited?: boolean } }[]; rateLimitResetCredits?: { availableCount: number } } | undefined = {
+    let nextData: { fetchedAt: number; snapshots: { limitId: string; primary: { usedPercent: number }; secondary?: { usedPercent: number }; credits?: { balance?: string | null; unlimited?: boolean } }[]; rateLimitResetCredits?: { availableCount: number } } | undefined = {
       fetchedAt: 0,
-      snapshots: [{ limitId: "codex", primary: { usedPercent: 19 }, credits: { balance: "$12.50" } }],
+      snapshots: [
+        { limitId: "codex", primary: { usedPercent: 19 }, secondary: { usedPercent: 29 }, credits: { balance: "$12.50" } },
+        { limitId: "codex-other", primary: { usedPercent: 39 }, secondary: { usedPercent: 49 } },
+      ],
       rateLimitResetCredits: { availableCount: 1 },
     }
     mock.module("./codex-usage", () => ({
@@ -319,18 +322,40 @@ describe("V2 plugin slot runtime", () => {
       await setup.renderOnce()
       const balanceFrame = await setup.waitForFrame((value) => value.includes("Usage credit balance: $12.50"))
       expect(balanceFrame).toContain("Codex Usage")
-      expect(balanceFrame).toContain("Usage credit balance: $12.50")
-      expect(balanceFrame).toContain("Reset credits available: 1")
-      expect(balanceFrame.indexOf("Reset credits available: 1")).toBeLessThan(balanceFrame.indexOf("Usage credit balance: $12.50"))
+      const balanceRows = balanceFrame.split("\n").map((row) => row.trim()).filter(Boolean)
+      expect(balanceRows.filter((row) => row.includes("Reset credits available:"))).toEqual(["Reset credits available: 1"])
+      expect(balanceRows.slice(-8)).toEqual([
+        "Overall limit left:",
+        "5h: 81% (resets reset unavailable)",
+        "Weekly: 71% (resets reset unavailable)",
+        "Codex limit left:",
+        "5h: 61% (resets reset unavailable)",
+        "Weekly: 51% (resets reset unavailable)",
+        "Reset credits available: 1",
+        "Usage credit balance: $12.50",
+      ])
       expect(fetchCalls).toBe(1)
       expect(activeSignal?.aborted).toBe(false)
 
-      nextData = { fetchedAt: 0, snapshots: [{ limitId: "codex", primary: { usedPercent: 38 }, credits: { unlimited: true, balance: "$12.50" } }], rateLimitResetCredits: { availableCount: 0 } }
+      nextData = { fetchedAt: 0, snapshots: [
+        { limitId: "codex", primary: { usedPercent: 38 }, secondary: { usedPercent: 48 }, credits: { unlimited: true, balance: "$12.50" } },
+        { limitId: "codex-other", primary: { usedPercent: 58 }, secondary: { usedPercent: 68 } },
+      ], rateLimitResetCredits: { availableCount: 0 } }
       idleListener?.({ data: { sessionID: "session-test" } })
       const unlimitedFrame = await setup.waitForFrame((value) => value.includes("62%") && value.includes("Usage credit balance: Unlimited"))
       expect(unlimitedFrame).not.toContain("$12.50")
-      expect(unlimitedFrame).toContain("Reset credits available: 0")
-      expect(unlimitedFrame.indexOf("Reset credits available: 0")).toBeLessThan(unlimitedFrame.indexOf("Usage credit balance: Unlimited"))
+      const unlimitedRows = unlimitedFrame.split("\n").map((row) => row.trim()).filter(Boolean)
+      expect(unlimitedRows.filter((row) => row.includes("Reset credits available:"))).toEqual(["Reset credits available: 0"])
+      expect(unlimitedRows.slice(-8)).toEqual([
+        "Overall limit left:",
+        "5h: 62% (resets reset unavailable)",
+        "Weekly: 52% (resets reset unavailable)",
+        "Codex limit left:",
+        "5h: 42% (resets reset unavailable)",
+        "Weekly: 32% (resets reset unavailable)",
+        "Reset credits available: 0",
+        "Usage credit balance: Unlimited",
+      ])
 
       nextData = { fetchedAt: 0, snapshots: [{ limitId: "codex", primary: { usedPercent: 27 }, credits: { balance: "  " } }] }
       idleListener?.({ data: { sessionID: "session-test" } })

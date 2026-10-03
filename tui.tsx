@@ -59,12 +59,6 @@ function SnapshotView(props: {
 
   const isPrimaryBucket = () => (props.snapshot.limitId || "codex").toLowerCase() === "codex"
   const heading = () => (isPrimaryBucket() ? "Overall limit left" : `${snapshotName(props.snapshot)} limit left`)
-  const credits = () => {
-    const value = props.snapshot.credits
-    if (value?.unlimited) return "Unlimited"
-    return value?.balance?.trim() || undefined
-  }
-
   return (
     <box flexDirection="column" gap={0} marginTop={isPrimaryBucket() ? 0 : 1}>
       <text fg={props.theme().textMuted}>{heading()}:</text>
@@ -83,14 +77,15 @@ function SnapshotView(props: {
           )
         }}
       </For>
-      <Show when={credits()}>
-        {(balance) => (
-          <box flexDirection="row" gap={0}>
-            <text fg={props.theme().textMuted}>Usage credit balance: </text>
-            <text fg={props.theme().text}>{balance()}</text>
-          </box>
-        )}
-      </Show>
+    </box>
+  )
+}
+
+function CreditView(props: { balance: string; theme: () => Plugin.Context["theme"] }) {
+  return (
+    <box flexDirection="row" gap={0}>
+      <text fg={props.theme().textMuted}>Usage credit balance: </text>
+      <text fg={props.theme().text}>{props.balance}</text>
     </box>
   )
 }
@@ -162,6 +157,11 @@ function View(props: { context: Plugin.Context; options: PluginOptions; sessionI
   })
 
   const snapshots = () => state().data?.snapshots || []
+  const balances = () => snapshots().flatMap((snapshot) => {
+    const credits = snapshot.credits
+    const balance = credits?.unlimited ? "Unlimited" : credits?.balance?.trim()
+    return balance ? [balance] : []
+  })
   const resetCredits = () => state().data?.rateLimitResetCredits?.availableCount
   const errorText = () => {
     const current = state()
@@ -185,12 +185,6 @@ function View(props: { context: Plugin.Context; options: PluginOptions; sessionI
         </text>
       </box>
       <Show when={!collapsed()}>
-        <Show when={resetCredits() !== undefined}>
-          <box flexDirection="row" gap={0}>
-            <text fg={theme().textMuted}>Reset credits available: </text>
-            <text fg={theme().text}>{resetCredits()}</text>
-          </box>
-        </Show>
         <Switch>
           <Match when={state().status === "error" && !state().data}>
             <text fg={theme().warning}>{errorText()}</text>
@@ -208,6 +202,14 @@ function View(props: { context: Plugin.Context; options: PluginOptions; sessionI
         <Show when={state().status === "error" && state().data}>
           <text fg={theme().warning}>refresh failed: {errorText()}</text>
         </Show>
+        <For each={balances().slice(0, -1)}>{(balance) => <CreditView balance={balance} theme={theme} />}</For>
+        <Show when={resetCredits() !== undefined}>
+          <box flexDirection="row" gap={0}>
+            <text fg={theme().textMuted}>Reset credits available: </text>
+            <text fg={theme().text}>{resetCredits()}</text>
+          </box>
+        </Show>
+        <Show when={balances()[balances().length - 1]}>{(balance) => <CreditView balance={balance()} theme={theme} />}</Show>
       </Show>
     </box>
   )

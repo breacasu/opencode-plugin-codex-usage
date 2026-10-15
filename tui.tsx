@@ -220,7 +220,7 @@ export default Plugin.define({
   setup(context) {
     const options = validatePluginOptions(context.options)
     return context.ui.slot({
-      before: "sidebar.content",
+      prepend: "sidebar.content",
       render: (props) => <View context={context} options={options} sessionID={props.sessionID} />,
     })
   },

@@ -3,6 +3,7 @@ import { spawn as nodeSpawn, type ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { PassThrough } from "node:stream"
 import type { Plugin } from "@opencode/plugin/tui"
+import { RGBA } from "@opentui/core"
 import {
   durationLabel,
   errorMessage,
@@ -257,6 +258,7 @@ describe("V2 plugin slot runtime", () => {
     const { testRender } = await import("@opentui/solid")
     let fetchCalls = 0
     let activeSignal: AbortSignal | undefined
+    let nextError: Error | undefined
     let nextData: { fetchedAt: number; snapshots: { limitId: string; primary: { usedPercent: number }; secondary?: { usedPercent: number }; credits?: { balance?: string | null; unlimited?: boolean } }[]; rateLimitResetCredits?: { availableCount: number } } | undefined = {
       fetchedAt: 0,
       snapshots: [
@@ -272,6 +274,11 @@ describe("V2 plugin slot runtime", () => {
       fetchRateLimits: (_binary: string, _home: string | undefined, signal: AbortSignal) => {
         fetchCalls += 1
         activeSignal = signal
+        if (nextError) {
+          const error = nextError
+          nextError = undefined
+          return Promise.reject(error)
+        }
         if (nextData) {
           const result = nextData
           nextData = undefined
@@ -283,6 +290,7 @@ describe("V2 plugin slot runtime", () => {
       resetLabel: () => "reset unavailable",
       rowLabel: (_window: unknown, fallback: string) => `${fallback}:`,
       snapshotName: () => "Codex",
+      validatePluginOptions,
     }))
     const { default: plugin } = await import("./tui")
     const intervalToken = {} as ReturnType<typeof setInterval>
@@ -314,9 +322,11 @@ describe("V2 plugin slot runtime", () => {
       ui: { slot: (value: Parameters<Plugin.Context["ui"]["slot"]>[0]) => { claim = value; render = value.render as (input: { sessionID: string }) => unknown; return () => {} } },
     } as unknown as Plugin.Context
     plugin.setup(context)
-    expect(claim).toEqual({ before: "sidebar.content", render: expect.any(Function) })
+    expect(claim).toEqual({ prepend: "sidebar.content", render: expect.any(Function) })
     expect(render).toBeDefined()
     let setup: Awaited<ReturnType<typeof testRender>> | undefined
+    let nestedSetup: Awaited<ReturnType<typeof testRender>> | undefined
+    let collapsedSetup: Awaited<ReturnType<typeof testRender>> | undefined
     try {
       setup = await testRender(() => render!({ sessionID: "session-test" }) as never, { width: 80, height: 24 })
       await setup.renderOnce()
@@ -371,7 +381,48 @@ describe("V2 plugin slot runtime", () => {
       idleListener?.({ data: { sessionID: "session-test" } })
       expect(fetchCalls).toBe(5)
       expect(activeSignal?.aborted).toBe(false)
+
+      // Host 2.1 passes grouped tokens whose leaves are RGBA, not flat color names.
+      const color = (hex: string) => RGBA.fromHex(hex)
+      const nestedTheme = {
+        text: {
+          base: color("#ffffff"),
+          muted: color("#888888"),
+          feedback: {
+            error: { base: color("#ff0000") },
+            warning: { base: color("#ffff00") },
+            success: { base: color("#00ff00") },
+          },
+        },
+      }
+      const nestedContext = { ...context, theme: nestedTheme } as unknown as Plugin.Context
+      nextData = { fetchedAt: 0, snapshots: [] }
+      plugin.setup(nestedContext)
+      nestedSetup = await testRender(() => render!({ sessionID: "session-test" }) as never, { width: 80, height: 24 })
+      await nestedSetup.renderOnce()
+      const emptyFrame = await nestedSetup.waitForFrame((value) => value.includes("No Codex usage data available."))
+      expect(emptyFrame).toContain("▼ Codex Usage")
+
+      nextError = new Error("offline")
+      idleListener?.({ data: { sessionID: "session-test" } })
+      expect(await nestedSetup.waitForFrame((value) => value.includes("offline"))).toContain("Codex Usage")
+
+      nextData = { fetchedAt: 0, snapshots: [{ limitId: "codex", primary: { usedPercent: 10 }, secondary: { usedPercent: 60 } }, { limitId: "codex-other", primary: { usedPercent: 90 } }] }
+      idleListener?.({ data: { sessionID: "session-test" } })
+      const nestedFrame = await nestedSetup.waitForFrame((value) => value.includes("90%") && value.includes("40%") && value.includes("10%"))
+      expect(nestedFrame).toContain("▼ Codex Usage")
+
+      nextData = { fetchedAt: 0, snapshots: [] }
+      const collapsedContext = { ...nestedContext, data: { ...nestedContext.data, session: { ...nestedContext.data.session, message: { ...nestedContext.data.session.message, list: () => [] } } } } as Plugin.Context
+      plugin.setup(collapsedContext)
+      collapsedSetup = await testRender(() => render!({ sessionID: "session-test" }) as never, { width: 80, height: 24 })
+      await collapsedSetup.renderOnce()
+      const collapsedFrame = await collapsedSetup.waitForFrame((value) => value.includes("▶ Codex Usage"))
+      expect(collapsedFrame).not.toContain("No Codex usage data available.")
+      idleListener?.({ data: { sessionID: "session-test" } })
     } finally {
+      collapsedSetup?.renderer.destroy()
+      nestedSetup?.renderer.destroy()
       setup?.renderer.destroy()
       globalThis.setInterval = originalSetInterval
       globalThis.clearInterval = originalClearInterval
@@ -379,6 +430,6 @@ describe("V2 plugin slot runtime", () => {
     expect(unsubscribed).toBe(true)
     expect(activeSignal?.aborted).toBe(true)
     expect(clearedIntervals).toContain(intervalToken)
-    expect(fetchCalls).toBe(5)
+    expect(fetchCalls).toBe(10)
   })
 })

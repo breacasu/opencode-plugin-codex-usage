@@ -19,7 +19,7 @@ It reads rate-limit data from `codex app-server` using Codex's `account/rateLimi
 
 ## Requirements
 
-- OpenCode v2.0.20 with its TUI.
+- OpenCode v2 with its TUI. Both legacy v2.0.20 colors and the grouped theme tokens used by v2.1.2 are supported.
 - The `codex` CLI installed and available on your `PATH`, unless you set `codexBinary` to a custom path.
 - A working Codex login so `codex app-server` can read its rate limits.
 
@@ -79,6 +79,7 @@ The plugin treats provider IDs containing `openai` or `codex` as a heuristic for
 - **`No Codex usage data available`**: Make sure Codex is logged in and can return rate-limit data from `codex app-server`.
 - **`Codex usage request failed`**: Check that Codex is logged in under the same `codexHome` (or inherited `CODEX_HOME`) used by the plugin; run `codex login` there if needed. The app-server diagnostic is intentionally hidden because it may contain authentication or account data.
 - **The plugin appears but stays collapsed**: This is expected in non-Codex sessions. Open a Codex or OpenAI-backed session to see it expand automatically.
+- **Listed under `/plugins` but missing from the sidebar after an OpenCode update**: Older plugin code could crash by treating grouped theme tokens as individual colors. This renderer supports both formats; restart OpenCode after updating the plugin.
 - **The sidebar does not update immediately**: The default refresh interval is `30000ms`. The plugin also refreshes when the session becomes idle.
 
 ## Local verification
@@ -88,9 +89,11 @@ From a local checkout, run the import smoke check and tests:
 ```bash
 bun run check
 bun test
+bun run typecheck
 ```
 
 The check verifies that the plugin module can be imported with OpenTUI runtime support.
+The sidebar regression test covers legacy colors and grouped RGBA tokens, including collapsed, empty, error and usage-data states.
 
 ## Performance notes
 

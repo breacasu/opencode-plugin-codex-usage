@@ -17,10 +17,35 @@ import {
   type RateLimitWindow,
 } from "./codex-usage"
 
-function remainingColor(remaining: number, theme: Plugin.Context["theme"]) {
-  if (remaining < 15) return theme.error
-  if (remaining < 50) return theme.warning
-  return theme.success
+type Color = Plugin.Context["theme"]["text"]
+
+function palette(theme: Plugin.Context["theme"]) {
+  // OpenCode 2.0 uses flat colors; newer hosts expose grouped theme tokens.
+  const colors = theme as unknown as {
+    text: Color | { base: Color; muted: Color; feedback: { error: { base: Color }; warning: { base: Color }; success: { base: Color } } }
+    textMuted: Color
+    error: Color
+    warning: Color
+    success: Color
+  }
+  if (typeof colors.text === "object" && colors.text !== null && "base" in colors.text) {
+    return {
+      text: colors.text.base,
+      muted: colors.text.muted,
+      error: colors.text.feedback.error.base,
+      warning: colors.text.feedback.warning.base,
+      success: colors.text.feedback.success.base,
+    }
+  }
+  return { text: colors.text, muted: colors.textMuted, error: colors.error, warning: colors.warning, success: colors.success }
+}
+
+type Palette = ReturnType<typeof palette>
+
+function remainingColor(remaining: number, colors: Palette) {
+  if (remaining < 15) return colors.error
+  if (remaining < 50) return colors.warning
+  return colors.success
 }
 
 function sessionUsesCodex(context: Plugin.Context, sessionID: string) {
@@ -37,7 +62,7 @@ function sessionUsesCodex(context: Plugin.Context, sessionID: string) {
 
 function SnapshotView(props: {
   snapshot: RateLimitSnapshot
-  theme: () => Plugin.Context["theme"]
+  theme: () => Palette
 }) {
   const rows = () =>
     [
@@ -61,7 +86,7 @@ function SnapshotView(props: {
   const heading = () => (isPrimaryBucket() ? "Overall limit left" : `${snapshotName(props.snapshot)} limit left`)
   return (
     <box flexDirection="column" gap={0} marginTop={isPrimaryBucket() ? 0 : 1}>
-      <text fg={props.theme().textMuted}>{heading()}:</text>
+      <text fg={props.theme().muted}>{heading()}:</text>
       <For each={rows()}>
         {(row) => {
           const remaining = percentLeft(row.window)
@@ -69,9 +94,9 @@ function SnapshotView(props: {
           return (
             <box flexDirection="column" gap={0}>
               <box flexDirection="row" gap={0}>
-                <text fg={props.theme().textMuted}>{row.label}</text>
+                <text fg={props.theme().muted}>{row.label}</text>
                 <text fg={color}> {remaining}%</text>
-                <text fg={props.theme().textMuted}> (resets {resetLabel(row.window.resetsAt)})</text>
+                <text fg={props.theme().muted}> (resets {resetLabel(row.window.resetsAt)})</text>
               </box>
             </box>
           )
@@ -81,10 +106,10 @@ function SnapshotView(props: {
   )
 }
 
-function CreditView(props: { balance: string; theme: () => Plugin.Context["theme"] }) {
+function CreditView(props: { balance: string; theme: () => Palette }) {
   return (
     <box flexDirection="row" gap={0}>
-      <text fg={props.theme().textMuted}>Usage credit balance: </text>
+      <text fg={props.theme().muted}>Usage credit balance: </text>
       <text fg={props.theme().text}>{props.balance}</text>
     </box>
   )
@@ -93,7 +118,7 @@ function CreditView(props: { balance: string; theme: () => Plugin.Context["theme
 function View(props: { context: Plugin.Context; options: PluginOptions; sessionID: string }) {
   const [state, setState] = createSignal<RateLimitState>({ status: "loading" })
   const [collapsed, setCollapsed] = createSignal(!sessionUsesCodex(props.context, props.sessionID))
-  const theme = () => props.context.theme
+  const theme = () => palette(props.context.theme)
   const codexBinary = props.options?.codexBinary || "codex"
   const codexHome = props.options?.codexHome || undefined
   const refreshMs = getRefreshMs(props.options)
@@ -190,10 +215,10 @@ function View(props: { context: Plugin.Context; options: PluginOptions; sessionI
             <text fg={theme().warning}>{errorText()}</text>
           </Match>
           <Match when={state().status === "loading" && !state().data}>
-            <text fg={theme().textMuted}>Loading Codex usage...</text>
+            <text fg={theme().muted}>Loading Codex usage...</text>
           </Match>
           <Match when={snapshots().length === 0}>
-            <text fg={theme().textMuted}>No Codex usage data available.</text>
+            <text fg={theme().muted}>No Codex usage data available.</text>
           </Match>
           <Match when={snapshots().length > 0}>
             <For each={snapshots()}>{(snapshot) => <SnapshotView snapshot={snapshot} theme={theme} />}</For>
@@ -205,7 +230,7 @@ function View(props: { context: Plugin.Context; options: PluginOptions; sessionI
         <For each={balances().slice(0, -1)}>{(balance) => <CreditView balance={balance} theme={theme} />}</For>
         <Show when={resetCredits() !== undefined}>
           <box flexDirection="row" gap={0}>
-            <text fg={theme().textMuted}>Reset credits available: </text>
+            <text fg={theme().muted}>Reset credits available: </text>
             <text fg={theme().text}>{resetCredits()}</text>
           </box>
         </Show>

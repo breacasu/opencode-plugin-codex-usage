@@ -62,6 +62,21 @@ describe("Codex usage formatting and response normalization", () => {
 })
 
 describe("Codex app-server protocol", () => {
+  const fetchWithProcess = async (script: string, signal?: AbortSignal) => {
+    let childClosed!: () => void
+    const closed = new Promise<void>((resolve) => { childClosed = resolve })
+    const request = fetchRateLimits(process.execPath, undefined, signal, (_command, _args, options) => {
+      const child = nodeSpawn(process.execPath, ["-e", script], options)
+      child.once("close", childClosed)
+      return child
+    })
+    try {
+      return await request
+    } finally {
+      await closed
+    }
+  }
+
   test("performs initialize and rate-limit read without Codex credentials", async () => {
     const script = [
       "const rl=require('node:readline').createInterface({input:process.stdin});",
@@ -70,9 +85,7 @@ describe("Codex app-server protocol", () => {
       "if(m.method==='account/rateLimits/read') process.stdout.write(JSON.stringify({id:2,result:{rateLimits:{limitId:'codex',primary:{usedPercent:25}},rateLimitResetCredits:{availableCount:1}}})+'\\n');",
       "});",
     ].join("")
-    const data = await fetchRateLimits(process.execPath, undefined, undefined, (_command, _args, options) =>
-      nodeSpawn(process.execPath, ["-e", script], options),
-    )
+    const data = await fetchWithProcess(script)
     expect(data.snapshots[0]?.primary?.usedPercent).toBe(25)
     expect(data.rateLimitResetCredits).toEqual({ availableCount: 1 })
   })
@@ -84,18 +97,14 @@ describe("Codex app-server protocol", () => {
       ["", undefined],
     ] as const) {
       const script = `const rl=require('node:readline').createInterface({input:process.stdin}); rl.on('line', line => { const m=JSON.parse(line); if(m.id===1) process.stdout.write(JSON.stringify({id:1,result:{}})+'\\n'); if(m.id===2) process.stdout.write(JSON.stringify({id:2,result:{rateLimits:{limitId:'codex'}${field}}})+'\\n'); });`
-      const data = await fetchRateLimits(process.execPath, undefined, undefined, (_command, _args, options) =>
-        nodeSpawn(process.execPath, ["-e", script], options),
-      )
+      const data = await fetchWithProcess(script)
       expect(data.rateLimitResetCredits).toEqual(expected)
     }
   })
 
   test("rejects initialize errors without leaking server diagnostics", async () => {
     const script = "process.stdin.on('data', () => process.stdout.write(JSON.stringify({id:1,error:{message:'sensitive auth payload'}})+'\\n'))"
-    await expect(fetchRateLimits(process.execPath, undefined, undefined, (_command, _args, options) =>
-      nodeSpawn(process.execPath, ["-e", script], options),
-    )).rejects.toThrow("initialization failed")
+    await expect(fetchWithProcess(script)).rejects.toThrow("initialization failed")
   })
 
   test("rejects malformed result envelopes", async () => {
@@ -104,9 +113,7 @@ describe("Codex app-server protocol", () => {
       "rl.on('line', line => { const m=JSON.parse(line); if(m.id===1) process.stdout.write(JSON.stringify({id:1,result:{}})+'\\n');",
       "if(m.id===2) process.stdout.write(JSON.stringify({id:2})+'\\n'); });",
     ].join("")
-    await expect(fetchRateLimits(process.execPath, undefined, undefined, (_command, _args, options) =>
-      nodeSpawn(process.execPath, ["-e", script], options),
-    )).rejects.toThrow("malformed JSON-RPC result")
+    await expect(fetchWithProcess(script)).rejects.toThrow("malformed JSON-RPC result")
   })
 
   test("rejects null and malformed rate-limit structures without throwing from stdout", async () => {
@@ -131,9 +138,7 @@ describe("Codex app-server protocol", () => {
       '{"rateLimitResetCredits":{"availableCount":1e400}}',
     ]) {
       const script = `const rl=require('node:readline').createInterface({input:process.stdin}); rl.on('line', line => { const m=JSON.parse(line); if(m.id===1) process.stdout.write(JSON.stringify({id:1,result:{}})+'\\n'); if(m.id===2) process.stdout.write(JSON.stringify({id:2,result:JSON.parse(${JSON.stringify(result)})})+'\\n'); });`
-      await expect(fetchRateLimits(process.execPath, undefined, undefined, (_command, _args, options) =>
-        nodeSpawn(process.execPath, ["-e", script], options),
-      )).rejects.toThrow(/malformed|invalid/)
+      await expect(fetchWithProcess(script)).rejects.toThrow(/malformed|invalid/)
     }
   })
 
@@ -143,9 +148,7 @@ describe("Codex app-server protocol", () => {
       "rl.on('line', line => { const m=JSON.parse(line); if(m.method==='initialize') { process.stdout.write(JSON.stringify({id:2,result:{rateLimits:{limitId:'wrong'}}})+'\\n'); process.stdout.write(JSON.stringify({id:1,result:{}})+'\\n'); process.stdout.write(JSON.stringify({id:1,result:{}})+'\\n'); }",
       "if(m.method==='account/rateLimits/read') { reads++; process.stdout.write(JSON.stringify({id:2,result:{rateLimits:{limitId:'codex'}}})+'\\n'); setTimeout(() => { if(reads!==1) process.exit(9); process.exit(0); }, 20); } });",
     ].join("")
-    const data = await fetchRateLimits(process.execPath, undefined, undefined, (_command, _args, options) =>
-      nodeSpawn(process.execPath, ["-e", script], options),
-    )
+    const data = await fetchWithProcess(script)
     expect(data.snapshots[0]?.limitId).toBe("codex")
   })
 
@@ -155,15 +158,11 @@ describe("Codex app-server protocol", () => {
       "rl.on('line', line => { const m=JSON.parse(line); if(m.id===1) process.stdout.write(JSON.stringify({id:1,result:{}})+'\\n');",
       "if(m.id===2) process.stdout.write(JSON.stringify({id:2,error:{message:'private account payload'}})+'\\n'); });",
     ].join("")
-    await expect(fetchRateLimits(process.execPath, undefined, undefined, (_command, _args, options) =>
-      nodeSpawn(process.execPath, ["-e", script], options),
-    )).rejects.toThrow("usage request failed")
+    await expect(fetchWithProcess(script)).rejects.toThrow("usage request failed")
   })
 
   test("rejects clean exit without a response", async () => {
-    await expect(fetchRateLimits(process.execPath, undefined, undefined, (_command, _args, options) =>
-      nodeSpawn(process.execPath, ["-e", "process.stdin.resume(); process.stdin.on('data', () => process.exit(0))"], options),
-    )).rejects.toThrow("exited without a usage result")
+    await expect(fetchWithProcess("process.stdin.resume(); process.stdin.on('data', () => process.exit(0))")).rejects.toThrow("exited without a usage result")
   })
 
   test("processes a response buffered until close", async () => {
@@ -172,37 +171,33 @@ describe("Codex app-server protocol", () => {
       "rl.on('line', line => { const m=JSON.parse(line); if(m.id===1) process.stdout.write(JSON.stringify({id:1,result:{}})+'\\n');",
       "if(m.id===2) process.stdout.write(JSON.stringify({id:2,result:{rateLimits:{limitId:'codex'}}}), () => process.exit(0)); });",
     ].join("")
-    const data = await fetchRateLimits(process.execPath, undefined, undefined, (_command, _args, options) =>
-      nodeSpawn(process.execPath, ["-e", script], options),
-    )
+    const data = await fetchWithProcess(script)
     expect(data.snapshots[0]?.limitId).toBe("codex")
   })
 
-  test("retains request ownership until a successful child closes", async () => {
-    if (process.platform === "win32") return
-    let requestSettled = false
-    const script = [
-      "process.on('SIGTERM',()=>{}); const rl=require('node:readline').createInterface({input:process.stdin});",
-      "rl.on('line', line => { const m=JSON.parse(line); if(m.id===1) process.stdout.write(JSON.stringify({id:1,result:{}})+'\\n');",
-      "if(m.id===2) { process.stdout.write(JSON.stringify({id:2,result:{rateLimits:{limitId:'codex'}}})+'\\n'); setTimeout(() => process.exit(0), 500); } });",
-    ].join("")
-    const request = fetchRateLimits(process.execPath, undefined, undefined, (_command, _args, options) =>
-      nodeSpawn(process.execPath, ["-e", script], options),
-    )
-    void request.finally(() => { requestSettled = true }).catch(() => {})
-    await new Promise((resolve) => setTimeout(resolve, 100))
-    expect(requestSettled).toBe(false)
-    expect((await request).snapshots[0]?.limitId).toBe("codex")
-    expect(requestSettled).toBe(true)
+  test("settles a successful request before close and retains ownership until close", async () => {
+    const child = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+      exitCode: null as number | null, signalCode: null as NodeJS.Signals | null,
+      kill: mock(() => true),
+    }) as unknown as ChildProcess
+    const request = fetchRateLimits("codex", undefined, undefined, () => child)
+    try {
+      child.stdout!.emit("data", Buffer.from('{"id":1,"result":{}}\n'))
+      child.stdout!.emit("data", Buffer.from('{"id":2,"result":{"rateLimits":{"limitId":"codex"}}}\n'))
+      expect((await request).snapshots[0]?.limitId).toBe("codex")
+      await expect(fetchRateLimits("codex")).rejects.toThrow("still closing")
+    } finally {
+      child.emit("close", 0)
+    }
   })
 
   test("retains cancelled request ownership until a SIGTERM-ignoring child is killed and closed", async () => {
     if (process.platform === "win32") return
     const controller = new AbortController()
-    let childExit: Promise<[number | null, NodeJS.Signals | null]> | undefined
+    let childExit!: Promise<[number | null, NodeJS.Signals | null]>
     let markReady!: () => void
     const childReady = new Promise<void>((resolve) => { markReady = resolve })
-    let requestSettled = false
     const request = fetchRateLimits(process.execPath, undefined, controller.signal, (_command, _args, options) => {
       const child = nodeSpawn(process.execPath, ["-e", "process.on('SIGTERM',()=>{}); process.stderr.write('ready\\n'); setInterval(() => {}, 1000)"], options)
       child.stderr?.once("data", markReady)
@@ -211,11 +206,12 @@ describe("Codex app-server protocol", () => {
     })
     await childReady
     controller.abort()
-    void request.finally(() => { requestSettled = true }).catch(() => {})
-    await new Promise((resolve) => setTimeout(resolve, 100))
-    expect(requestSettled).toBe(false)
-    await expect(request).rejects.toThrow("cancelled")
-    expect(await childExit).toEqual([null, "SIGKILL"])
+    try {
+      await expect(request).rejects.toThrow("cancelled")
+      expect(await childExit).toEqual([null, "SIGKILL"])
+    } finally {
+      await childExit
+    }
   })
 
   test("prevents overlapping subprocesses until the prior child closes", async () => {
@@ -239,14 +235,105 @@ describe("Codex app-server protocol", () => {
     const first = fetchRateLimits("codex", undefined, undefined, spawnMock)
     await expect(fetchRateLimits("codex", undefined, undefined, spawnMock)).rejects.toThrow("still closing")
     expect(spawnCalls).toBe(1)
-    firstChild.emit("close", 0)
-    await expect(first).rejects.toThrow("exited without a usage result")
+    try {
+      firstChild.emit("close", 0)
+      await expect(first).rejects.toThrow("exited without a usage result")
 
-    const afterClose = fetchRateLimits("codex", undefined, undefined, spawnMock)
-    expect(spawnCalls).toBe(2)
-    secondChild.emit("close", 0)
-    await expect(afterClose).rejects.toThrow("exited without a usage result")
-    expect(spawnCalls).toBe(2)
+      const afterClose = fetchRateLimits("codex", undefined, undefined, spawnMock)
+      expect(spawnCalls).toBe(2)
+      secondChild.emit("close", 0)
+      await expect(afterClose).rejects.toThrow("exited without a usage result")
+      expect(spawnCalls).toBe(2)
+    } finally {
+      firstChild.emit("close", 0)
+      secondChild.emit("close", 0)
+    }
+  })
+
+  test("settles on timeout but keeps subprocess ownership until close", async () => {
+    const child = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+      exitCode: null as number | null, signalCode: null as NodeJS.Signals | null,
+      kill: mock(() => true),
+    }) as unknown as ChildProcess
+    let spawns = 0
+    let timeoutCallback: (() => void) | undefined
+    const timerFunctions = {
+      setTimeout: ((callback: () => void) => {
+        timeoutCallback = callback
+        return { unref() {} } as unknown as ReturnType<typeof setTimeout>
+      }) as typeof setTimeout,
+      clearTimeout: (() => {}) as typeof clearTimeout,
+    }
+    const request = fetchRateLimits("codex", undefined, undefined, () => { spawns++; return child }, timerFunctions)
+    try {
+      timeoutCallback?.()
+      await expect(request).rejects.toThrow("timed out")
+      await expect(fetchRateLimits("codex", undefined, undefined, () => { spawns++; return child })).rejects.toThrow("still closing")
+      expect(spawns).toBe(1)
+      child.emit("close", null)
+      const next = fetchRateLimits("codex", undefined, undefined, () => { spawns++; return child })
+      child.emit("close", 0)
+      await expect(next).rejects.toThrow("exited without a usage result")
+      expect(spawns).toBe(2)
+    } finally {
+      child.emit("close", 0)
+    }
+  })
+
+  test("settles successful responses before close and absorbs late stream errors", async () => {
+    const killed: string[] = []
+    const child = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+      exitCode: null as number | null, signalCode: null as NodeJS.Signals | null,
+      kill: mock((signal: string) => { killed.push(signal); return true }),
+    }) as unknown as ChildProcess
+    let nextTimerId = 0
+    const scheduled = new Map<number, () => void>()
+    const timerFunctions = {
+      setTimeout: ((callback: () => void) => {
+        const id = ++nextTimerId
+        scheduled.set(id, callback)
+        return { id, unref() {} } as unknown as ReturnType<typeof setTimeout>
+      }) as typeof setTimeout,
+      clearTimeout: ((timer: ReturnType<typeof setTimeout>) => {
+        scheduled.delete((timer as unknown as { id: number }).id)
+      }) as typeof clearTimeout,
+    }
+    const request = fetchRateLimits("codex", undefined, undefined, () => child, timerFunctions)
+    try {
+      child.stdout!.emit("data", Buffer.from('{"id":1,"result":{}}\n'))
+      child.stdout!.emit("data", Buffer.from('{"id":2,"result":{"rateLimits":{"limitId":"codex"}}}\n'))
+      expect((await request).snapshots[0]?.limitId).toBe("codex")
+      expect(killed).toEqual(["SIGTERM"])
+      expect([...scheduled.values()]).toHaveLength(1)
+      ;[...scheduled.values()][0]?.()
+      expect(killed).toEqual(["SIGTERM", "SIGKILL"])
+      await expect(fetchRateLimits("codex", undefined, undefined, () => child)).rejects.toThrow("still closing")
+      child.stdout!.emit("error", new Error("sensitive stream detail"))
+    } finally {
+      child.emit("close", 0)
+    }
+  })
+
+  test("settles abort and synchronous initial write failures safely", async () => {
+    const makeChild = () => Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+      exitCode: null as number | null, signalCode: null as NodeJS.Signals | null,
+      kill: mock(() => true),
+    }) as unknown as ChildProcess
+    const abortedChild = makeChild()
+    const controller = new AbortController()
+    const aborted = fetchRateLimits("codex", undefined, controller.signal, () => abortedChild)
+    controller.abort()
+    await expect(aborted).rejects.toThrow("cancelled")
+    abortedChild.emit("close", null)
+
+    const writeChild = makeChild()
+    const input = writeChild.stdin!
+    input.write = (() => { throw new Error("private detail") }) as typeof input.write
+    await expect(fetchRateLimits("codex", undefined, undefined, () => writeChild)).rejects.toThrow("input failed")
+    writeChild.emit("close", null)
   })
 })
 

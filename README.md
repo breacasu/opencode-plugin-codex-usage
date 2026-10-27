@@ -25,7 +25,7 @@ It reads rate-limit data from `codex app-server` using Codex's `account/rateLimi
 
 ## Installation and configuration
 
-Install the published package by adding it to OpenCode's **global** `cli.json` in the global OpenCode configuration directory. The schema URL and plugin entry format for OpenCode v2.0.20 are:
+Install the published package by adding it to OpenCode's **global** `cli.json` in the global OpenCode configuration directory. To use this fork after its changes are published, replace the package value below with `github:breacasu/opencode-plugin-codex-usage#main`. The schema URL and plugin entry format for OpenCode v2 are:
 
 ```json
 {
@@ -41,14 +41,14 @@ Install the published package by adding it to OpenCode's **global** `cli.json` i
 }
 ```
 
-For a local checkout, install its dependencies with `bun install`, then use the absolute directory path as a `file:///...` package value:
+For a local checkout, install its dependencies with `bun install` (or `npm install --ignore-scripts --package-lock=false`), then use its absolute directory path as the package value:
 
 ```json
 {
   "$schema": "https://opencode.ai/v2/cli.json",
   "plugins": [
     {
-      "package": "file:///absolute/path/to/opencode-plugin-codex-usage",
+      "package": "/absolute/path/to/opencode-plugin-codex-usage",
       "options": {
         "refreshMs": 30000
       }
@@ -81,6 +81,7 @@ The plugin treats provider IDs containing `openai` or `codex` as a heuristic for
 - **The plugin appears but stays collapsed**: This is expected in non-Codex sessions. Open a Codex or OpenAI-backed session to see it expand automatically.
 - **Listed under `/plugins` but missing from the sidebar after an OpenCode update**: Older plugin code could crash by treating grouped theme tokens as individual colors. This renderer supports both formats; restart OpenCode after updating the plugin.
 - **The sidebar does not update immediately**: The default refresh interval is `30000ms`. The plugin also refreshes when the session becomes idle.
+- **A request times out or cleanup is incomplete**: The panel should show an error instead of remaining on its initial Loading state. A new Codex process is blocked until the prior child emits `close`; if it never does, restart OpenCode after investigating the local Codex process. This prevents repeated overlapping spawns but does not forcibly clean up a process tree.
 
 ## Local verification
 
@@ -100,4 +101,4 @@ The sidebar regression test covers legacy colors and grouped RGBA tokens, includ
 - CPU and memory usage are low; only a small in-memory snapshot is retained.
 - The plugin does not call the model or inject prompt/context into OpenCode sessions.
 - Each refresh launches a short-lived `codex app-server` process to read current usage windows. Increase `refreshMs` to `60000` or `120000` to reduce refresh frequency.
-- Cancellation and timeout terminate the direct Codex executable and wait for its close event before another refresh can start. A module-level guard also prevents overlapping subprocesses across mounted Views. This is fail-closed: there is no timeout fallback that releases ownership before `close`, so refresh may remain stalled indefinitely if termination fails or descendants retain inherited pipes. Only the direct child is terminated; process-tree cleanup is not managed, and Codex is expected to clean up any descendants it creates.
+- A terminal result (success, timeout, cancellation or failure) updates the request promptly, even if the Codex child has not closed. SIGTERM and, if needed, SIGKILL after 250 ms are independent of that update. The module-level ownership guard continues blocking new children until `close`, including across mounted Views; if `close` never arrives, the UI reports a failure instead of remaining on initial Loading, but automatic refresh cannot spawn again in that module instance. Only the direct child is terminated; process-tree cleanup is not managed. Stderr and sensitive stream errors are never displayed, and stdout buffering is bounded.

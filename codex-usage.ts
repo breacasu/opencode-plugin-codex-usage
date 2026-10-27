@@ -51,6 +51,7 @@ export type RateLimitState =
 const MIN_REFRESH_MS = 15000
 const DEFAULT_REFRESH_MS = 30000
 const MAX_REFRESH_MS = 2_147_483_647
+const MAX_STDOUT_BUFFER = 1024 * 1024
 let subprocessOwned = false
 
 export function errorMessage(error: unknown) {
@@ -199,6 +200,10 @@ function normalizeRateLimitResponse(input: unknown) {
 }
 
 type SpawnProcess = (command: string, args: string[], options: Parameters<typeof nodeSpawn>[2]) => ChildProcess
+type TimerFunctions = {
+  setTimeout: typeof setTimeout
+  clearTimeout: typeof clearTimeout
+}
 
 /** Fetches usage through Codex's delegated app-server auth; credentials are never read by this plugin. */
 export async function fetchRateLimits(
@@ -206,6 +211,7 @@ export async function fetchRateLimits(
   codexHome?: string,
   signal?: AbortSignal,
   spawnProcess: SpawnProcess = nodeSpawn,
+  timers: TimerFunctions = { setTimeout, clearTimeout },
 ) {
   return new Promise<RateLimitData>((resolve, reject) => {
     if (signal?.aborted) {
@@ -229,53 +235,43 @@ export async function fetchRateLimits(
       return
     }
     let stdout = ""
-    let finalizing = false
     let settled = false
     let closed = false
-    let outcome: { error?: Error; result?: RateLimitData } | undefined
     let initialized = false
     let requestSent = false
     let killTimer: ReturnType<typeof setTimeout> | undefined
-    const timeout = setTimeout(() => finish(new Error("timed out while reading Codex usage")), 15000)
+    let timeout: ReturnType<typeof setTimeout> | undefined
 
-    const finish = (error?: Error, result?: RateLimitData) => {
-      if (finalizing || settled) return
-      finalizing = true
-      outcome = { ...(error ? { error } : {}), ...(result ? { result } : {}) }
-      clearTimeout(timeout)
-      if (!closed && child.exitCode === null && child.signalCode === null) {
-        try { child.kill("SIGTERM") } catch { /* close/error owns completion */ }
-        killTimer = setTimeout(() => {
-          if (!closed && child.exitCode === null && child.signalCode === null) {
-            try { child.kill("SIGKILL") } catch { /* never release ownership before close */ }
-          }
-        }, 250)
-        killTimer.unref()
-      }
-      if (closed) settleAfterClose()
-    }
-    const settleAfterClose = () => {
+    const settle = (error?: Error, result?: RateLimitData) => {
       if (settled) return
       settled = true
-      if (killTimer) clearTimeout(killTimer)
-      clearTimeout(timeout)
+      stdout = ""
+      if (timeout) timers.clearTimeout(timeout)
       signal?.removeEventListener("abort", onAbort)
-      child.removeListener("error", onChildError)
-      child.removeListener("close", onClose)
-      child.stdin?.removeListener("error", onStreamError)
       child.stdout?.removeListener("data", onStdout)
-      child.stderr?.removeListener("data", drainStderr)
-      const result = outcome
-      if (result?.error) reject(result.error)
-      else if (result?.result) resolve(result.result)
+      if (error) reject(error)
+      else if (result) resolve(result)
       else reject(new Error("Codex returned no usage data"))
     }
+    const finish = (error?: Error, result?: RateLimitData) => {
+      if (settled) return
+      settle(error, result)
+      if (closed || child.exitCode !== null || child.signalCode !== null) return
+      try { child.kill("SIGTERM") } catch { /* retain ownership until close */ }
+      killTimer = timers.setTimeout(() => {
+        if (!closed && child.exitCode === null && child.signalCode === null) {
+          try { child.kill("SIGKILL") } catch { /* retain ownership until close */ }
+        }
+      }, 250)
+      ;(killTimer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.()
+    }
     const onAbort = () => finish(new Error("Codex usage request cancelled"))
-    signal?.addEventListener("abort", onAbort, { once: true })
-
-    const send = (message: Record<string, unknown>) => child.stdin?.write(`${JSON.stringify(message)}\n`)
+    const send = (message: Record<string, unknown>) => {
+      if (!child.stdin) throw new Error("Codex app-server input unavailable")
+      child.stdin.write(`${JSON.stringify(message)}\n`)
+    }
     const handleLine = (line: string) => {
-      if (!line.trim() || finalizing) return
+      if (!line.trim() || settled) return
       try {
         const parsed: unknown = JSON.parse(line)
         if (!isRecord(parsed)) {
@@ -308,12 +304,16 @@ export async function fetchRateLimits(
         finish(new Error("Codex returned malformed or invalid usage data"))
       }
     }
-    const onChildError = (error: Error) => finish(error instanceof Error ? error : new Error(String(error)))
-    const onStreamError = (error: Error) => finish(error instanceof Error ? error : new Error(String(error)))
+    const onChildError = () => finish(new Error("Codex app-server process failed"))
+    const onStreamError = () => finish(new Error("Codex app-server stream failed"))
     const drainStderr = () => { /* stderr may contain authentication or account data; drain without logging */ }
     const onStdout = (chunk: Buffer) => {
-      if (finalizing) return
+      if (settled) return
       stdout += chunk.toString()
+      if (stdout.length > MAX_STDOUT_BUFFER) {
+        finish(new Error("Codex returned an oversized response"))
+        return
+      }
       const lines = stdout.split(/\r?\n/)
       stdout = lines.pop() ?? ""
       for (const line of lines) handleLine(line)
@@ -321,20 +321,35 @@ export async function fetchRateLimits(
     const onClose = (code: number | null) => {
       closed = true
       subprocessOwned = false
-      if (killTimer) clearTimeout(killTimer)
-      if (!finalizing && stdout.trim()) handleLine(stdout)
-      if (!finalizing) finish(new Error(code === 0 ? "Codex exited without a usage result" : `codex exited with code ${code}`))
-      settleAfterClose()
+      if (killTimer) timers.clearTimeout(killTimer)
+      if (!settled && stdout.trim()) handleLine(stdout)
+      if (!settled) finish(new Error(code === 0 ? "Codex exited without a usage result" : `codex exited with code ${code}`))
+      child.removeListener("error", onChildError)
+      child.removeListener("close", onClose)
+      child.stdin?.removeListener("error", onStreamError)
+      child.stdout?.removeListener("error", onStreamError)
+      child.stderr?.removeListener("error", onStreamError)
+      child.stdout?.removeListener("data", onStdout)
+      child.stderr?.removeListener("data", drainStderr)
+      stdout = ""
     }
+    signal?.addEventListener("abort", onAbort, { once: true })
     child.on("error", onChildError)
     child.stdin?.on("error", onStreamError)
+    child.stdout?.on("error", onStreamError)
+    child.stderr?.on("error", onStreamError)
     child.stdout?.on("data", onStdout)
     child.stderr?.on("data", drainStderr)
     child.on("close", onClose)
-    send({
-      method: "initialize",
-      id: 1,
-      params: { clientInfo: { name: "opencode_codex_usage", title: "OpenCode Codex Usage", version: "0.1.0" } },
-    })
+    timeout = timers.setTimeout(() => finish(new Error("timed out while reading Codex usage")), 15000)
+    try {
+      send({
+        method: "initialize",
+        id: 1,
+        params: { clientInfo: { name: "opencode_codex_usage", title: "OpenCode Codex Usage", version: "0.1.0" } },
+      })
+    } catch {
+      finish(new Error("Codex app-server input failed"))
+    }
   })
 }
